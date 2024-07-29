@@ -48,12 +48,13 @@ python3 redisManager.py --task 'initRedis&loadTask' --taskfile task
 
 
 ### 3. Start the worker nodes
-We use the `parallel-ssh` tool to start the scripts on the worker nodes. The list of workers (ip or hostname) is stored in the `host` file.
+We use the `parallel-ssh` tool to start the scripts on the worker nodes. The list of workers (ip or hostname) is stored in the `host` file while the ip or hostname of the manager is stored in `conf.json` file.
 
 ```bash
 
 parallel-ssh -h host -i -t 0 '''
     cd /PATH/TO/DistComp;
+    # sed -i "s/\"redis_host\": \"node0\"/\"redis_host\": \"your_manager_node\"/" conf.json
     screen -S worker -L -Logfile workerScreen/$(hostname) -dm python3 redisWorker.py
 '''
 ```
