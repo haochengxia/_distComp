@@ -1,5 +1,6 @@
 import os
 import sys
+from datetime import timedelta
 
 import json
 from pprint import pprint
@@ -151,7 +152,23 @@ def print_task_status(redis_inst,
         print("##" * 24 + "  in_progress task  " + "##" * 24)
         for task, output in in_progress_tasks.items():
             if my_filter(task):
-                print("{}:         {}".format(task, output))
+                start_time = redis_inst.hget(REDIS_KEY_TASK_START_TIME, str(task))
+                progress = redis_inst.hget(REDIS_KEY_TASK_PROGRESS, str(task))
+                time_info = ""
+                if start_time and progress:
+                    try:
+                        progress = float(progress)
+                        elapsed_time = time.time() - float(start_time)
+                        elapsed_delta = timedelta(seconds=int(elapsed_time))
+                        if progress > 0:
+                            remaining_time = (elapsed_time / progress) * (100 - progress)
+                            remaining_delta = timedelta(seconds=int(remaining_time))
+                            time_info = f"Runing: {elapsed_delta}, ETA: {remaining_delta} ({progress:.1f}%)"
+                        else:
+                            time_info = f"Runing: {elapsed_delta}"
+                    except (ValueError, ZeroDivisionError):
+                        time_info = f"Runing: {elapsed_delta}"
+                print("{}:         {} {}".format(task, output, time_info))
     if finished:
         print("##" * 24 + "  finished task  " + "##" * 24)
         for task, result in finished_tasks.items():

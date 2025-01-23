@@ -24,6 +24,7 @@ REDIS_KEY_IN_PROGRESS_TASKS = "in_progress_tasks"
 REDIS_KEY_FAILED_TASKS = "failed_tasks"
 REDIS_KEY_FINISHED_TASKS = "finished_tasks"
 REDIS_KEY_TASK_FAIL_REASON = "task_fail_reason"
+REDIS_KEY_TASK_PROGRESS = "task_progress"
 
 
 #################################### other #####################################
