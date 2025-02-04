@@ -52,8 +52,8 @@ We use the `parallel-ssh` tool to start the scripts on the worker nodes. The lis
 
 ```bash
 
-parallel-ssh -h host -i -t 0 '''
-    cd /PATH/TO/DistComp;
+parallel-ssh -h ~/host -i -t 0 '''
+    cd ~/distComp;
     # sed -i "s/\"redis_host\": \"node0\"/\"redis_host\": \"your_manager_node\"/" conf.json
     screen -S worker -L -Logfile workerScreen/$(hostname) -dm python3 redisWorker.py
 '''
