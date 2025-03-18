@@ -1,0 +1,9 @@
+redis/
+*.tar.gz
+
+dump.rdb
+
+# python
+*.pyc
+*.pyo
+*.pyd

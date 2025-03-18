@@ -381,8 +381,21 @@ class Worker:
 #################################### main  #####################################
 
     def start(self):
+        cnt = 0
         task = EMPTY_TASK
+        sleep_sec_between_accepting_task = self.config.sleep_sec_between_accepting_task
+        prev_n_todo = self.redis_inst.hlen(REDIS_KEY_TODO_TASKS)
+        
         while task != END_OF_TASK:
+            cnt += 1
+            curr_n_todo = self.redis_inst.hlen(REDIS_KEY_TODO_TASKS)
+            
+            # Reset sleep time when detecting a new batch of tasks
+            if curr_n_todo > prev_n_todo + 10:
+                sleep_sec_between_accepting_task = self.config.sleep_sec_between_accepting_task
+                logging.info(f"detect new task batch, reset sleep time to {sleep_sec_between_accepting_task}")
+            prev_n_todo = curr_n_todo
+            
             task = self.get_task_from_redis()
             self.logging_worker_info(f"get task {task}")
 
@@ -390,16 +403,20 @@ class Worker:
                 p = TaskRunner(self.name, self.redis_inst, task,
                                self.config.max_retry_per_task)
                 p.start()
-                # if task in self.in_progress_tasks:
-                #     # clean up
-                #     self.wait_for_task_completion(timeout=2)
                 self.add_in_progress_task(task, p)
 
+            # Increase sleep time when system load is high
             while not self.can_take_new_task():
+                sleep_sec_between_accepting_task = self._adjust_sleep_time_high_load(sleep_sec_between_accepting_task)
                 time.sleep(8)
                 self.find_finished_task()
 
-            time.sleep(self.config.sleep_sec_between_accepting_task)
+            # Periodically adjust sleep time based on system load
+            if cnt >= 100:
+                sleep_sec_between_accepting_task = self._adjust_sleep_time_by_load(sleep_sec_between_accepting_task)
+                cnt = 0
+
+            time.sleep(sleep_sec_between_accepting_task)
             self.find_finished_task()
 
         # redis has no task, wait for all tasks to finish
@@ -410,6 +427,43 @@ class Worker:
         self.stop_flag = True
         self.health_report_thread.join()
         self.health_monitor_thread.join()
+
+    def _adjust_sleep_time_high_load(self, current_sleep_sec):
+        """Adjust sleep time when system load is high
+        - Double the sleep time each time, but cap at 2 seconds
+        - Log the adjustment
+        """
+        new_sleep_sec = min(self.config.sleep_sec_between_accepting_task, current_sleep_sec * 2)
+        self.logging_worker_info(f"increase sleep sec between accepting task to {new_sleep_sec}")
+        return new_sleep_sec
+
+    def _adjust_sleep_time_by_load(self, current_sleep_sec):
+        """Adjust sleep time based on system load
+        - Get CPU and memory usage metrics
+        - Calculate sleep time based on load ratio
+        - Ensure sleep time stays within reasonable bounds
+        """
+        health_str = self.redis_inst.hget("worker_status", self.name)
+        if health_str is None:
+            return current_sleep_sec
+        
+        _, used_core, total_core, used_mem_gb, total_mem_gb = health_str.split(":")
+        used_core = float(used_core)
+        total_core = float(total_core) 
+        used_mem_gb = float(used_mem_gb)
+        total_mem_gb = float(total_mem_gb)
+
+        # Calculate CPU and memory load ratios
+        cpu_ratio = used_core / (total_core - 2)  # Reserve 2 cores
+        mem_ratio = used_mem_gb / (total_mem_gb - self.config.min_dram_gb_accept_new_task)
+        load_ratio = min(max(cpu_ratio, mem_ratio), 1)
+        
+        # Adjust sleep time based on load ratio
+        base_sleep = max(load_ratio, 0.5) * current_sleep_sec
+        new_sleep_sec = max(base_sleep, 1e-3 * self.config.sleep_sec_between_accepting_task)  # Ensure minimum sleep time
+        
+        self.logging_worker_info(f"adjust sleep sec to {new_sleep_sec} based on load ratio {load_ratio:.2f}")
+        return new_sleep_sec
 
 
 #################################### Task runner #####################################
