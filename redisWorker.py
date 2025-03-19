@@ -383,7 +383,7 @@ class Worker:
     def start(self):
         cnt = 0
         task = EMPTY_TASK
-        sleep_sec_between_accepting_task = self.config.sleep_sec_between_accepting_task
+        local_sleep_sec_between_accepting_task = self.config.sleep_sec_between_accepting_task
         prev_n_todo = self.redis_inst.hlen(REDIS_KEY_TODO_TASKS)
         
         while task != END_OF_TASK:
@@ -391,9 +391,9 @@ class Worker:
             curr_n_todo = self.redis_inst.hlen(REDIS_KEY_TODO_TASKS)
             
             # Reset sleep time when detecting a new batch of tasks
-            if curr_n_todo > prev_n_todo + 10:
-                sleep_sec_between_accepting_task = self.config.sleep_sec_between_accepting_task
-                logging.info(f"detect new task batch, reset sleep time to {sleep_sec_between_accepting_task}")
+            if self.config.auto_sleep_sec and curr_n_todo > prev_n_todo + 100:  # Threshold for detecting new batch
+                local_sleep_sec_between_accepting_task = self.config.sleep_sec_between_accepting_task
+                logging.info(f"new task batch detected, reset sleep time to {local_sleep_sec_between_accepting_task}")
             prev_n_todo = curr_n_todo
             
             task = self.get_task_from_redis()
@@ -407,16 +407,20 @@ class Worker:
 
             # Increase sleep time when system load is high
             while not self.can_take_new_task():
-                sleep_sec_between_accepting_task = self._adjust_sleep_time_high_load(sleep_sec_between_accepting_task)
+                if self.config.auto_sleep_sec:
+                    local_sleep_sec_between_accepting_task = self._adjust_sleep_time_high_load(local_sleep_sec_between_accepting_task)
                 time.sleep(8)
                 self.find_finished_task()
 
             # Periodically adjust sleep time based on system load
-            if cnt >= 100:
-                sleep_sec_between_accepting_task = self._adjust_sleep_time_by_load(sleep_sec_between_accepting_task)
+            if cnt >= 100 and self.config.auto_sleep_sec:
+                local_sleep_sec_between_accepting_task = self._adjust_sleep_time_by_load(local_sleep_sec_between_accepting_task)
                 cnt = 0
 
-            time.sleep(sleep_sec_between_accepting_task)
+            if self.config.auto_sleep_sec:
+                time.sleep(local_sleep_sec_between_accepting_task)
+            else:
+                time.sleep(self.config.sleep_sec_between_accepting_task)
             self.find_finished_task()
 
         # redis has no task, wait for all tasks to finish

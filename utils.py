@@ -1,4 +1,3 @@
-
 import json
 import time
 from threading import Thread, Lock
@@ -24,12 +23,9 @@ it assumes that each config field is independent and updating one field of the c
 class RunnerConfig:
     def __init__(self, conf_path, auto_reload):
         """
-
         :param conf_path: path to the config file
         :param auto_reload: if True, the config will be reloaded every 20 seconds
-
         """
-
         # all config fields
         self.min_dram_gb_trigger_return = None
         self.min_dram_gb_accept_new_task = None
@@ -38,6 +34,7 @@ class RunnerConfig:
         self.result_dir = None
         self.health_report_interval = None
         self.sleep_sec_between_accepting_task = None
+        self.auto_sleep_sec = None
         self.redis_host = None
         self.redis_port = None
         self.redis_pass = None
@@ -73,6 +70,7 @@ class RunnerConfig:
                 conf_data["health_report_interval"])
             self.sleep_sec_between_accepting_task = int(
                 conf_data["sleep_sec_between_accepting_task"])
+            self.auto_sleep_sec = bool(conf_data.get("auto_sleep_sec", True))
 
             # redis related
             self.redis_host = conf_data["redis_host"]
