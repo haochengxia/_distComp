@@ -12,6 +12,17 @@ from utils import *
 
 CONFIG = RunnerConfig(CONFIG_PATH, auto_reload=False)
 
+# create redis connection pool
+def create_redis_pool(host, port, db, password):
+    return redis.ConnectionPool(
+        host=host,
+        port=port,
+        db=db,
+        password=password,
+        decode_responses=True,
+        max_connections=10  # for manager, set to 10
+    )
+
 
 def init_redis(redis_inst):
     redis_inst.flushall()
@@ -348,12 +359,14 @@ if __name__ == "__main__":
                         )
 
     ap = parser.parse_args()
-    redis_inst = redis.Redis(
-        host=ap.redis_host,
-        port=ap.redis_port,
-        db=ap.redis_db,
-        password=ap.redis_pass,
-        decode_responses=True)  # ssl=True, ssl_cert_reqs=None
+    # each manager instance uses a separate connection pool
+    redis_pool = create_redis_pool(
+        ap.redis_host,
+        ap.redis_port,
+        ap.redis_db,
+        ap.redis_pass
+    )
+    redis_inst = redis.Redis(connection_pool=redis_pool)
 
     tasks = []
     if '&' in ap.task:

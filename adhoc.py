@@ -1,12 +1,14 @@
 import redis
 from const import *
 
-redis_inst = redis.Redis(
+redis_pool = redis.ConnectionPool(
     host="localhost",
-    port="6400",
+    port=6400,
     db=0,
     password="cloudlab",
-    decode_responses=True)  # ssl=True, ssl_cert_reqs=None
+    decode_responses=True
+)
+redis_inst = redis.Redis(connection_pool=redis_pool)
 
 def update_task():
     for task in redis_inst.hkeys(REDIS_KEY_FINISHED_TASKS):

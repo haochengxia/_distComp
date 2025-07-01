@@ -18,6 +18,17 @@ from const import *
 
 CONFIG = RunnerConfig(CONFIG_PATH, auto_reload=True)
 
+# create redis connection pool
+def create_redis_pool(host, port, db, password):
+    return redis.ConnectionPool(
+        host=host,
+        port=port,
+        db=db,
+        password=password,
+        decode_responses=True,
+        max_connections=20  # for worker, set to 20
+    )
+
 
 def run_demo_task(task_params):
     p = subprocess.run("echo demo {}".format(task_params),
@@ -98,12 +109,14 @@ class Worker:
     def __init__(self, conf_path="conf.json"):
         self.name = "" + socket.gethostname().split(".")[0]
         self.config = RunnerConfig(conf_path, True)
-        self.redis_inst = redis.Redis(
-            host=self.config.redis_host,
-            port=self.config.redis_port,
-            db=self.config.redis_db,
-            password=self.config.redis_pass,
-            decode_responses=True)  # ssl=True, ssl_cert_reqs=None
+        # each worker instance uses a separate connection pool
+        self.redis_pool = create_redis_pool(
+            self.config.redis_host,
+            self.config.redis_port,
+            self.config.redis_db,
+            self.config.redis_pass
+        )
+        self.redis_inst = redis.Redis(connection_pool=self.redis_pool)
 
         self.in_prog_need_dram_gb = 0
         self.in_progress_tasks = {}  # task -> (start_time, process)
