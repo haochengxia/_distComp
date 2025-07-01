@@ -19,7 +19,7 @@ fi
 
 screen -S re -dm ./redis/src/redis-server ./redis/redis.conf
 sleep 2
-./redis/src/redis-cli -p 6400 -a cloudlab
+./redis/src/redis-cli -p 6400 -a cloudlab ping
 
 
 
