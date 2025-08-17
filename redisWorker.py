@@ -62,7 +62,7 @@ TASK_TYPE_TO_FUNC = {
 
 def report_task_finish(worker_name, redis_inst, task, result):
     """
-    report a task is finished to redis
+    report a task is finished to redis using pipeline for better performance
 
     """
 
@@ -72,15 +72,17 @@ def report_task_finish(worker_name, redis_inst, task, result):
         logging.error(
             f"finished task is not assigned to worker {worker} != {worker_name}")
 
-    redis_inst.hset(REDIS_KEY_FINISHED_TASKS, task.task_str,
-                            "{}: {}".format(worker_name, result))
-
-    redis_inst.hdel(REDIS_KEY_IN_PROGRESS_TASKS, task.task_str)
-    redis_inst.hdel(REDIS_KEY_FAILED_TASKS, task.task_str)
+    # Use pipeline to batch Redis operations
+    pipeline = redis_inst.pipeline()
+    pipeline.hset(REDIS_KEY_FINISHED_TASKS, task.task_str,
+                 "{}: {}".format(worker_name, result))
+    pipeline.hdel(REDIS_KEY_IN_PROGRESS_TASKS, task.task_str)
+    pipeline.hdel(REDIS_KEY_FAILED_TASKS, task.task_str)
+    pipeline.execute()
 
 def report_task_failed(worker_name, redis_inst, task, errmsg, max_retry_per_task):
     """ 
-    report the task failed
+    report the task failed using pipeline for better performance
 
     """
 
@@ -95,9 +97,12 @@ def report_task_failed(worker_name, redis_inst, task, errmsg, max_retry_per_task
     if failed_workers is None:
         failed_workers = ""
     failed_workers += worker_name + ","
-    redis_inst.hset(REDIS_KEY_FAILED_TASKS,
-                            task.task_str, failed_workers)
-    redis_inst.hset(REDIS_KEY_TASK_FAIL_REASON, task.task_str, errmsg)
+    
+    # Use pipeline to batch Redis operations
+    pipeline = redis_inst.pipeline()
+    pipeline.hset(REDIS_KEY_FAILED_TASKS, task.task_str, failed_workers)
+    pipeline.hset(REDIS_KEY_TASK_FAIL_REASON, task.task_str, errmsg)
+    pipeline.execute()
     redis_inst.hdel(REDIS_KEY_IN_PROGRESS_TASKS, task.task_str)
 
     if failed_workers.count(",") < max_retry_per_task:
@@ -323,24 +328,28 @@ class Worker:
 
     def get_task_from_redis(self):
         """
-        fetch a new task from redis
+        fetch a new task from redis using pipeline for better performance
 
         """
 
-        n_todo = self.redis_inst.hlen(REDIS_KEY_TODO_TASKS)
+        # Use pipeline to batch Redis operations
+        pipeline = self.redis_inst.pipeline()
+        pipeline.hlen(REDIS_KEY_TODO_TASKS)
+        pipeline.hgetall(REDIS_KEY_TODO_TASKS)
+        pipeline.hgetall(REDIS_KEY_FAILED_TASKS)
+        
+        # Execute all operations in a single network call
+        n_todo, todo, failed_tasks = pipeline.execute()
+
         if n_todo > 1000:
+            # For large task queues, use random sampling
             kv_list = self.redis_inst.hrandfield(REDIS_KEY_TODO_TASKS, 20, withvalues=True)
             todo = {}
             for i in range(len(kv_list) // 2):
                 todo[kv_list[i*2]] = kv_list[i*2+1]
-        else:
-            todo = self.redis_inst.hgetall(REDIS_KEY_TODO_TASKS)
 
         if WORKER_STOP_COMMAND in todo:
             return END_OF_TASK
-
-        # failed_tasks = {}
-        failed_tasks = self.redis_inst.hgetall(REDIS_KEY_FAILED_TASKS)
 
         task_can_work_on = []
         for task_str, _ in todo.items():

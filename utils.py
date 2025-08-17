@@ -58,8 +58,9 @@ class RunnerConfig:
 
     def load_config(self):
         self.lock.acquire()
-        with open(self.conf_path) as f:
-            conf_data = json.load(f)
+        try:
+            with open(self.conf_path) as f:
+                conf_data = json.load(f)
 
             # task related
             self.min_dram_gb_trigger_return = int(
@@ -85,7 +86,64 @@ class RunnerConfig:
             self.redis_port = int(conf_data["redis_port"])
             self.redis_pass = conf_data["redis_pass"]
             self.redis_db = int(conf_data["redis_db"])
-        self.lock.release()
+            
+            # Validate configuration
+            self._validate_config()
+            
+        except Exception as e:
+            logging.error(f"Failed to load configuration: {e}")
+            raise
+        finally:
+            self.lock.release()
+            
+    def _validate_config(self):
+        """Validate configuration parameters"""
+        errors = []
+        
+        # Validate memory settings
+        if self.min_dram_gb_trigger_return <= 0:
+            errors.append("min_dram_gb_trigger_return must be positive")
+        if self.min_dram_gb_accept_new_task <= 0:
+            errors.append("min_dram_gb_accept_new_task must be positive")
+        if self.min_dram_gb_trigger_return >= self.min_dram_gb_accept_new_task:
+            errors.append("min_dram_gb_trigger_return should be less than min_dram_gb_accept_new_task")
+            
+        # Validate task settings
+        if self.max_task_per_worker <= 0:
+            errors.append("max_task_per_worker must be positive")
+        if self.max_retry_per_task < 0:
+            errors.append("max_retry_per_task must be non-negative")
+        if self.default_task_timeout_seconds < 0:
+            errors.append("default_task_timeout_seconds must be non-negative")
+        if self.task_timeout_check_interval <= 0:
+            errors.append("task_timeout_check_interval must be positive")
+            
+        # Validate timing settings
+        if self.health_report_interval <= 0:
+            errors.append("health_report_interval must be positive")
+        if self.sleep_sec_between_accepting_task < 0:
+            errors.append("sleep_sec_between_accepting_task must be non-negative")
+            
+        # Validate Redis settings
+        if self.redis_port <= 0 or self.redis_port > 65535:
+            errors.append("redis_port must be between 1 and 65535")
+        if self.redis_db < 0:
+            errors.append("redis_db must be non-negative")
+            
+        # Validate result directory
+        if not os.path.exists(self.result_dir):
+            try:
+                os.makedirs(self.result_dir, exist_ok=True)
+                logging.info(f"Created result directory: {self.result_dir}")
+            except Exception as e:
+                errors.append(f"Cannot create result directory {self.result_dir}: {e}")
+                
+        if errors:
+            error_msg = "Configuration validation failed:\n" + "\n".join(f"- {error}" for error in errors)
+            logging.error(error_msg)
+            raise ValueError(error_msg)
+        else:
+            logging.info("Configuration validation passed")
 
     def stop(self):
         self.stop_flag = True
