@@ -1,0 +1,20 @@
+# Task format description:
+# Old format: task_type:priority:min_dram:min_cpu:task_params
+# New format: task_type:priority:min_dram:min_cpu:timeout_seconds:task_params
+#
+# Example tasks:
+
+# Task using default timeout (3600 seconds)
+shell:5:8:2:echo "This task uses default timeout"
+
+# Task with custom timeout (1800 seconds = 30 minutes)
+shell:5:8:2:1800:echo "This task has 30 minutes timeout"
+
+# Short timeout task (300 seconds = 5 minutes)
+shell:3:4:1:300:echo "This task has 5 minutes timeout"
+
+# Long running task (7200 seconds = 2 hours)
+shell:4:16:4:7200:echo "This task has 2 hours timeout"
+
+# Task without timeout limit (set to 0 means no limit)
+shell:2:2:1:0:echo "This task has no timeout limit"

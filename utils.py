@@ -35,6 +35,8 @@ class RunnerConfig:
         self.min_dram_gb_accept_new_task = None
         self.max_task_per_worker = None
         self.max_retry_per_task = None
+        self.default_task_timeout_seconds = None
+        self.task_timeout_check_interval = None
         self.result_dir = None
         self.health_report_interval = None
         self.sleep_sec_between_accepting_task = None
@@ -66,6 +68,10 @@ class RunnerConfig:
                 conf_data["min_dram_gb_accept_new_task"])
             self.max_task_per_worker = int(conf_data["max_task_per_worker"])
             self.max_retry_per_task = int(conf_data["max_retry_per_task"])
+            self.default_task_timeout_seconds = int(
+                conf_data["default_task_timeout_seconds"])
+            self.task_timeout_check_interval = int(
+                conf_data["task_timeout_check_interval"])
             self.result_dir = conf_data["result_dir"]
 
             # worker related
@@ -109,6 +115,7 @@ class Task:
         self.min_dram_gb = None
         self.require_cpu_core = None
         self.priority = None
+        self.timeout_seconds = None  # New timeout duration attribute
         try:
             self.parse_task_str(task_str)
         except Exception as e:
@@ -117,8 +124,22 @@ class Task:
                 f"task str format task_type:priority:min_dram:min_cpu:task_params, e.g. shell:5:8:0:echo hello")
 
     def parse_task_str(self, task_str):
-        task_type, priority, dram, cpu, task_params = task_str.split(
-            TASK_FORMAT_SEPARATOR)
+        # Support two formats:
+        # 1. Old format: task_type:priority:dram:cpu:task_params
+        # 2. New format: task_type:priority:dram:cpu:timeout:task_params
+        parts = task_str.split(TASK_FORMAT_SEPARATOR)
+        
+        if len(parts) == 5:
+            # Old format, use default timeout
+            task_type, priority, dram, cpu, task_params = parts
+            self.timeout_seconds = None  # Use default timeout
+        elif len(parts) == 6:
+            # New format, includes timeout
+            task_type, priority, dram, cpu, timeout, task_params = parts
+            self.timeout_seconds = int(timeout) if timeout.isdigit() else None
+        else:
+            raise ValueError(f"Invalid task format: {task_str}")
+            
         self.task_type = task_type
         self.priority = int(priority)
         self.min_dram_gb = int(dram)
@@ -127,14 +148,29 @@ class Task:
         
     def is_task_str_valid(task_str):
         """
-        task str format task_type:priority:min_dram:min_cpu:task_params, e.g. shell:5:8:0:echo hello
+        task str format: 
+        - Old format: task_type:priority:min_dram:min_cpu:task_params
+        - New format: task_type:priority:min_dram:min_cpu:timeout:task_params
+        e.g. shell:5:8:0:echo hello
+        e.g. shell:5:8:0:3600:echo hello
 
         """
 
         try:
-            task_type, priority, dram, cpu, task_params = task_str.split(
-                TASK_FORMAT_SEPARATOR)
-            if task_type not in ["shell", "python"]:
+            parts = task_str.split(TASK_FORMAT_SEPARATOR)
+            
+            if len(parts) == 5:
+                # Old format
+                task_type, priority, dram, cpu, task_params = parts
+            elif len(parts) == 6:
+                # New format
+                task_type, priority, dram, cpu, timeout, task_params = parts
+                if not timeout.isdigit() or int(timeout) < 0:
+                    return False
+            else:
+                return False
+                
+            if task_type not in ["shell", "python", "demo"]:
                 return False
             if not priority.isdigit() or int(priority) <0:
                 return False

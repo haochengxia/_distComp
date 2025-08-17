@@ -132,6 +132,11 @@ class Worker:
         self.health_monitor_thread = Thread(
             target=self.health_monitor_thread_func, args=())
         self.health_monitor_thread.start()
+        
+        # Start timeout monitoring thread
+        self.timeout_monitor_thread = Thread(
+            target=self.timeout_monitor_thread_func, args=())
+        self.timeout_monitor_thread.start()
 
         # fetch whatever this worker was running before (if it is restarted)
         self.reset_task()
@@ -180,6 +185,22 @@ class Worker:
             if self.total_mem_gb - self.used_mem_gb < self.config.min_dram_gb_trigger_return:
                 self.return_most_recent_task()
             time.sleep(2)
+            
+    def timeout_monitor_thread_func(self):
+        """
+        Periodically check task timeouts
+        """
+        logging.info("timeout monitoring starts")
+        while not self.stop_flag:
+            try:
+                timeout_count = self.check_task_timeouts()
+                if timeout_count > 0:
+                    logging.info(f"Handled {timeout_count} timeout tasks")
+            except Exception as e:
+                logging.error(f"Error in timeout monitor: {e}")
+            
+            # Use configured timeout check interval
+            time.sleep(self.config.task_timeout_check_interval)
 
     ########### new task #############
 
@@ -208,6 +229,70 @@ class Worker:
         self.in_progress_tasks[task] = (time.time(), proc)
         self.in_prog_need_dram_gb += task.min_dram_gb
         self.lock.release()
+
+    def check_task_timeouts(self):
+        """Check and handle timeout tasks"""
+        current_time = time.time()
+        timeout_tasks = []
+        
+        self.lock.acquire()
+        try:
+            for task, (start_time, proc) in self.in_progress_tasks.items():
+                # Determine timeout duration
+                timeout_seconds = task.timeout_seconds
+                if timeout_seconds is None:
+                    timeout_seconds = self.config.default_task_timeout_seconds
+                
+                if current_time - start_time > timeout_seconds:
+                    timeout_tasks.append((task, proc))
+                    logging.warning(f"Task {task.task_str} has exceeded timeout {timeout_seconds}s")
+        finally:
+            self.lock.release()
+            
+        # Handle timeout tasks
+        for task, proc in timeout_tasks:
+            self._handle_timeout_task(task, proc)
+            
+        return len(timeout_tasks)
+        
+    def _handle_timeout_task(self, task, proc):
+        """Handle timeout task"""
+        try:
+            # Try to terminate process
+            if proc.is_alive():
+                parent = psutil.Process(proc.pid)
+                for child in parent.children(recursive=True):
+                    try:
+                        child.kill()
+                    except psutil.NoSuchProcess:
+                        pass
+                try:
+                    parent.kill()
+                except psutil.NoSuchProcess:
+                    pass
+                    
+            # Remove from in-progress tasks
+            self.lock.acquire()
+            try:
+                if task in self.in_progress_tasks:
+                    del self.in_progress_tasks[task]
+                    self.in_prog_need_dram_gb -= task.min_dram_gb
+            finally:
+                self.lock.release()
+                
+            # Report task failure
+            report_task_failed(
+                self.name, 
+                self.redis_inst, 
+                task, 
+                f"Task timed out after {task.timeout_seconds or self.config.default_task_timeout_seconds} seconds", 
+                self.config.max_retry_per_task
+            )
+            
+            logging.info(f"Handled timeout task: {task.task_str}")
+            
+        except Exception as e:
+            logging.error(f"Error handling timeout task {task.task_str}: {e}")
 
     ########### task and redis #############
     def return_task(self, task_str):
@@ -411,9 +496,13 @@ class Worker:
             while not self.can_take_new_task():
                 time.sleep(8)
                 self.find_finished_task()
+                # Check timeout tasks
+                self.check_task_timeouts()
 
             time.sleep(self.config.sleep_sec_between_accepting_task)
             self.find_finished_task()
+            # Periodically check timeout tasks
+            self.check_task_timeouts()
 
         # redis has no task, wait for all tasks to finish
         while len(self.in_progress_tasks) > 0:
@@ -423,6 +512,7 @@ class Worker:
         self.stop_flag = True
         self.health_report_thread.join()
         self.health_monitor_thread.join()
+        self.timeout_monitor_thread.join()
 
 
 #################################### Task runner #####################################
@@ -433,12 +523,35 @@ class TaskRunner(Process):
         self.redis_inst = redis_inst
         self.task = task
         self.max_retry_per_task = max_retry_per_task
+        self.config = RunnerConfig(CONFIG_PATH, auto_reload=False)
 
     def run(self):
         o_stdout, o_stderr, exitcode = "", "", -1
+        timeout_occurred = False
+        
         try:
             func = TASK_TYPE_TO_FUNC[self.task.task_type]
-            exitcode, o_stdout, o_stderr = func(self.task.task_params)
+            
+            # Determine timeout duration
+            timeout_seconds = self.task.timeout_seconds
+            if timeout_seconds is None:
+                timeout_seconds = self.config.default_task_timeout_seconds
+                
+            logging.info(f"Running task {self.task.task_str} with timeout {timeout_seconds}s")
+            
+            # Run task with timeout
+            if self.task.task_type == "shell":
+                exitcode, o_stdout, o_stderr = self._run_shell_task_with_timeout(
+                    self.task.task_params, timeout_seconds)
+            else:
+                # For other task types, use original execution method
+                exitcode, o_stdout, o_stderr = func(self.task.task_params)
+                
+        except subprocess.TimeoutExpired:
+            timeout_occurred = True
+            o_stderr = f"Task timed out after {timeout_seconds} seconds"
+            exitcode = -1
+            logging.warning(f"Task {self.task.task_str} timed out after {timeout_seconds}s")
         except Exception as e:
             logging.warning("error {} task {}".format(e, self.task))
             o_stderr = "failed task \n" + str(e) + "\n" + o_stderr
@@ -446,7 +559,7 @@ class TaskRunner(Process):
                 logging.error("exitcode 0 but error {} {}".format(e, o_stderr))
                 exitcode = -1
 
-        if exitcode != 0:
+        if exitcode != 0 or timeout_occurred:
             msg = json.dumps(o_stderr)
             if len(msg) > 1024:
                 msg = "stderr is too large. " + msg[:1024]
@@ -462,6 +575,22 @@ class TaskRunner(Process):
             report_task_finish(self.worker_name, self.redis_inst, self.task, msg)
             logging.info("finish task {}".format(self.task))
             sys.exit(0)
+            
+    def _run_shell_task_with_timeout(self, task_params, timeout_seconds):
+        """Run shell task with timeout support"""
+        try:
+            p = subprocess.run(task_params,
+                             shell=True,
+                             stdout=subprocess.PIPE,
+                             stderr=subprocess.PIPE,
+                             timeout=timeout_seconds)
+            o_stdout = p.stdout.decode("ascii").strip()
+            o_stderr = p.stderr.decode("ascii").strip()
+            return p.returncode, o_stdout, o_stderr
+        except subprocess.TimeoutExpired:
+            # When timeout occurs, try to terminate process
+            logging.warning(f"Task timed out, attempting to kill process")
+            raise
 
 
 #################################### util function #####################################
